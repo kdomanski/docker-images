@@ -1,0 +1,71 @@
+name: Build all-in-one
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  all-in-one:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        mode:
+        - name: v1
+          binary: all-in-one
+          skip_sampling: false
+        - name: v2
+          binary: jaeger
+          skip_sampling: true
+
+    steps:
+    - name: Harden Runner
+      uses: step-security/harden-runner@17d0e2bd7d51742c71671bd19fa12bdc9d40a3d6 # v2.8.1
+      with:
+        egress-policy: audit # TODO: change to 'egress-policy: block' after couple of runs
+
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+      with:
+        submodules: true
+
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+      with:
+        repository: jaegertracing/jaeger
+        path: jaeger
+        submodules: true
+
+    - uses: actions/setup-go@cdcb36043654635271a94b9a6d1392de5bb323a7 # v5.0.1
+      with:
+        go-version: 1.22.x
+
+    - name: Get Node.js version from jaeger-ui
+      shell: bash
+      run: |
+        echo "JAEGER_UI_NODE_JS_VERSION=$(cat jaeger/jaeger-ui/.nvmrc)" >> ${GITHUB_ENV}
+
+    - uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # v4.0.2
+      with:
+        node-version: ${{ env.JAEGER_UI_NODE_JS_VERSION }}
+        cache: 'yarn'
+        cache-dependency-path: jaeger/jaeger-ui/yarn.lock
+
+    - name: Install tools
+      run: make -C jaeger install-ci
+
+    - uses: docker/setup-qemu-action@68827325e0b33c7199eb31dd4e31fbe9023e06e3 # v3.0.0
+
+    - name: build base images
+      working-directory: jaeger
+      run: make build-base-images create-baseimg PLATFORMS="linux/arm"
+
+    - name: Build, test, and publish all-in-one image
+      working-directory: ./jaeger
+      run: |
+        bash scripts/build-all-in-one-image.sh -b ${{ matrix.mode.binary }} -p "linux/arm"
+      env:
+        DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
+        # SKIP_SAMPLING is used by integration tests, see https://github.com/jaegertracing/jaeger/issues/5531
+        SKIP_SAMPLING: ${{ matrix.mode.skip_sampling }}
